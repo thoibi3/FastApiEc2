@@ -1,0 +1,53 @@
+name: Deploy FastAPI to EC2 with Terraform
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      aws-region: us-east-1
+
+
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v3
+
+    - name: Set up Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.5
+
+    - name: Terraform Init
+      run: terraform init
+
+    - name: Terraform Apply
+      run: terraform apply -auto-approve
+
+    - name: Get EC2 Public IP
+      id: ec2ip
+      run: echo "EC2_PUBLIC_IP=$(terraform output -raw public_ip)" >> $GITHUB_ENV
+
+    - name: Setup SSH key
+      run: |
+        mkdir -p ~/.ssh
+        echo "${{ secrets.EC2_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H "$EC2_PUBLIC_IP" >> ~/.ssh/known_hosts
+
+    - name: Upload App Code to EC2
+      run: |
+        scp -o StrictHostKeyChecking=no -r main.py requirements.txt ubuntu@$EC2_PUBLIC_IP:/home/ubuntu/app/
+
+    - name: Restart FastAPI on EC2
+      run: |
+        ssh ubuntu@$EC2_PUBLIC_IP << EOF
+          cd /home/ubuntu/app
+          pip3 install -r requirements.txt || pip3 install fastapi uvicorn
+          sudo pkill uvicorn || true
+          nohup uvicorn main:app --host 0.0.0.0 --port 80 > fastapi.log 2>&1 &
+        EOF
